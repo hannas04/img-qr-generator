@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>QR Invitation Maker</title>
+<style>
+:root{--g:#0e3b2e;--gold:#b08d3c;--bg:#faf6ec;--line:#d9d2bf}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:#1b2420;font:16px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif}
+header{background:var(--g);color:#fff;padding:18px 20px}
+header h1{margin:0;font-size:1.3rem}header p{margin:4px 0 0;opacity:.8;font-size:.9rem}
+main{max-width:1100px;margin:0 auto;padding:20px;display:grid;grid-template-columns:340px 1fr;gap:24px}
+@media(max-width:860px){main{grid-template-columns:1fr}}
+.step{background:#fff;border:1px solid var(--line);padding:16px;margin-bottom:14px}
+.step h2{margin:0 0 10px;font-size:1rem;color:var(--g)}
+.step h2 span{display:inline-grid;place-items:center;width:24px;height:24px;border-radius:50%;background:var(--g);color:#fff;font-size:.8rem;margin-right:8px}
+input[type=file]{width:100%;font:inherit}
+label{display:block;font-size:.85rem;margin:10px 0 3px}
+input[type=number]{width:100%;min-height:44px;padding:8px;font:inherit;border:1px solid #8a9690}
+.row{display:flex;gap:10px}.row>*{flex:1}
+button{min-height:44px;padding:0 16px;font:600 .9rem system-ui;border:1px solid var(--g);background:var(--g);color:#fff;cursor:pointer;width:100%;margin-top:8px}
+button.alt{background:#fff;color:var(--g)}
+button:disabled{opacity:.45;cursor:not-allowed}
+.small{font-size:.82rem;color:#4b5a53}
+.ok{color:#1d6b3a;font-weight:600}.warn{color:#9a5b00}.bad{color:#a3261f}
+#log{max-height:150px;overflow:auto;font-size:.8rem;margin-top:8px;white-space:pre-wrap}
+.stagewrap{position:sticky;top:10px}
+.stage{position:relative;background:#ddd;border:1px solid var(--line);touch-action:none;user-select:none;-webkit-user-select:none}
+.stage img.design{display:block;width:100%;height:auto;pointer-events:none}
+.box{position:absolute;outline:2px dashed var(--gold);background:#fff;cursor:move;touch-action:none}
+.box img{position:absolute;image-rendering:pixelated;pointer-events:none}
+.handle{position:absolute;right:-12px;bottom:-12px;width:24px;height:24px;background:var(--gold);border:2px solid #fff;border-radius:50%;cursor:nwse-resize;touch-action:none}
+.nav{display:flex;align-items:center;gap:10px;margin-bottom:10px}.nav button{width:auto;margin:0}
+.empty{padding:60px 20px;text-align:center;color:#6b756f;border:2px dashed var(--line);background:#fff}
+/*FL*/.fl{max-height:180px;overflow:auto;border:1px solid var(--line);margin-top:8px;font-size:.8rem}.fl label{display:flex;gap:8px;align-items:center;margin:0;padding:6px 8px;border-bottom:1px solid #eee}.fl label.off{color:#a3261f}
+progress{width:100%;height:14px;margin-top:8px}
+</style>
+</head>
+<body>
+<header><h1>QR Invitation Maker</h1><p>Runs entirely in your browser. Nothing is uploaded anywhere.</p></header>
+<main>
+<div>
+  <div class="step"><h2><span>1</span>QR codes (.zip)</h2>
+    <input type="file" id="zipIn" accept=".zip,application/zip">
+    <div class="small" id="zipInfo">Choose the zip with one QR image per guest.</div><div id="log"></div><div id="files"></div></div>
+  <div class="step"><h2><span>2</span>Invitation design</h2>
+    <input type="file" id="designIn" accept="image/png,image/jpeg,image/webp">
+    <div class="small" id="designInfo">PNG or JPG, ideally 300 DPI.</div></div>
+  <div class="step"><h2><span>3</span>Position the QR</h2>
+    <div class="small">Drag the dashed box on the preview. Drag the gold dot to resize.</div>
+    <label for="pad">White border around QR (% of its size)</label><input type="number" id="pad" value="6" min="0" max="20">
+    <label><input type="checkbox" id="bg" checked> White background behind QR (recommended for scanning)</label>
+    <label for="rot">Rotate QR</label><select id="rot" style="width:100%;min-height:44px;font:inherit"><option value="0">0° (upright)</option><option value="90">90°</option><option value="180">180°</option><option value="270">270°</option></select></div>
+  <div class="step"><h2><span>4</span>Create files</h2>
+    <label for="per">PNG zip: files per zip part</label><input type="number" id="per" value="100" min="1">
+    <label for="dpi">Design DPI (sets PDF page size)</label><input type="number" id="dpi" value="300" min="72">
+    <button id="goZip" disabled>Download PNGs (zip)</button>
+    <button id="goPdf" class="alt" disabled>Download PDF (one page per guest)</button>
+    <progress id="prog" value="0" max="1" hidden></progress><div class="small" id="status"></div></div>
+</div>
+<div class="stagewrap">
+  <div class="nav"><button class="alt" id="prev" disabled>‹ Prev</button><button class="alt" id="next" disabled>Next ›</button><span class="small" id="which"></span></div>
+  <div id="empty" class="empty">Upload your design and QR zip to see the preview.</div>
+  <div class="stage" id="stage" hidden><img class="design" id="dImg" alt="Invitation design preview">
+    <div class="box" id="box"><img id="qImg" alt="QR preview"><div class="handle" id="hd"></div></div></div>
+</div>
+</main>
+<script>
+"use strict";
+const $=s=>document.querySelector(s);
+const EXT=/\.(png|jpe?g|webp)$/i;
+let qrs=[],design=null,cur=0,pos={x:.35,y:.7,w:.3};   /* fractions of design width/height */
+
+/* ---------- zip reading (central directory + DecompressionStream) ---------- */
+async function readZip(buf){
+  const u8=new Uint8Array(buf),dv=new DataView(buf);let e=u8.length-22;
+  while(e>=0&&dv.getUint32(e,true)!==0x06054b50)e--;
+  if(e<0)throw new Error("This is not a valid zip file.");
+  const n=dv.getUint16(e+10,true);let p=dv.getUint32(e+16,true);const out=[];
+  for(let i=0;i<n;i++){
+    if(dv.getUint32(p,true)!==0x02014b50)break;
+    const method=dv.getUint16(p+10,true),cs=dv.getUint32(p+20,true),nl=dv.getUint16(p+28,true),el=dv.getUint16(p+30,true),cl=dv.getUint16(p+32,true),lh=dv.getUint32(p+42,true);
+    const name=new TextDecoder().decode(u8.subarray(p+46,p+46+nl));p+=46+nl+el+cl;
+    out.push({name,method,cs,lh});
+  }
+  const get=async f=>{
+    const s=f.lh+30+dv.getUint16(f.lh+26,true)+dv.getUint16(f.lh+28,true),d=u8.subarray(s,s+f.cs);
+    if(f.method===0)return d;
+    if(f.method!==8)throw new Error("Unsupported compression in "+f.name);
+    return new Uint8Array(await new Response(new Blob([d]).stream().pipeThrough(new DecompressionStream("deflate-raw"))).arrayBuffer());
+  };
+  return{files:out,get};
+}
+/* a QR with no dark pixels (or one that cannot be decoded) is treated as blank */
+async function isBlank(blob){
+  try{const b=await createImageBitmap(blob),c=document.createElement("canvas");c.width=c.height=48;const x=c.getContext("2d");
+    x.fillStyle="#fff";x.fillRect(0,0,48,48);x.drawImage(b,0,0,48,48);b.close();
+    const d=x.getImageData(0,0,48,48).data;let min=255;
+    for(let i=0;i<d.length;i+=4){const l=(d[i]+d[i+1]+d[i+2])/3;if(l<min)min=l}
+    return min>200;
+  }catch(e){return true}
+}
+const active=()=>qrs.filter(q=>q.on);
+function updateCount(){
+  const bl=qrs.filter(q=>q.blank).length;
+  $("#zipInfo").innerHTML='<span class="ok">Using '+active().length+" of "+qrs.length+" image"+(qrs.length===1?"":"s")+"</span>"+(bl?' <span class="warn">('+bl+" blank or unreadable, left out)</span>":"");
+  refresh();
+}
+function renderFiles(){
+  const f=$("#files");f.className="fl";f.textContent="";
+  qrs.forEach(q=>{
+    const l=document.createElement("label"),c=document.createElement("input");
+    c.type="checkbox";c.checked=q.on;l.className=q.on?"":"off";
+    c.onchange=()=>{q.on=c.checked;l.className=q.on?"":"off";updateCount()};
+    l.append(c,document.createTextNode(q.name+(q.blank?" (looks blank)":"")));f.appendChild(l);
+  });
+  updateCount();
+}
+const base=n=>n.split("/").pop().replace(/\.[^.]+$/,"");
+const mime=n=>/\.png$/i.test(n)?"image/png":/\.webp$/i.test(n)?"image/webp":"image/jpeg";
+
+$("#zipIn").addEventListener("change",async ev=>{
+  const f=ev.target.files[0];if(!f)return;
+  $("#zipInfo").textContent="Reading…";$("#log").textContent="";qrs=[];
+  try{
+    if(typeof DecompressionStream==="undefined")throw new Error("Please use an up-to-date Chrome, Edge, Safari or Firefox.");
+    const z=await readZip(await f.arrayBuffer()),skipped=[],used={};
+    const list=z.files.filter(x=>{
+      if(x.name.endsWith("/"))return false;
+      if(/(^|\/)(__MACOSX|\.DS_Store)|\/\._|^\._/.test(x.name))return false;
+      if(!EXT.test(x.name)){skipped.push(x.name);return false}return true;
+    }).sort((a,b)=>a.name.localeCompare(b.name,undefined,{numeric:true}));
+    for(const x of list){
+      const data=await z.get(x);
+      if(!data.length){skipped.push(x.name+" (empty file)");continue}
+      let name=base(x.name);
+      used[name]=(used[name]||0)+1;if(used[name]>1)name+="-"+used[name];
+      const blob=new Blob([data],{type:mime(x.name)}),blank=await isBlank(blob);
+      qrs.push({name,blob,blank,on:!blank});
+    }
+    renderFiles();
+    $("#log").innerHTML=(skipped.length?'<span class="warn">Ignored '+skipped.length+" non-image file(s): "+skipped.slice(0,10).join(", ")+(skipped.length>10?"…":"")+"</span>\n":"")+
+      (Object.values(used).some(v=>v>1)?'<span class="warn">Some file names repeat; they were renamed with -2, -3…</span>\n':"")+
+      "First: "+qrs.slice(0,3).map(q=>q.name).join(", ")+(qrs.length>3?" … Last: "+qrs[qrs.length-1].name:"");
+    cur=0;await showQr();
+  }catch(err){$("#zipInfo").innerHTML='<span class="bad">'+err.message+"</span>"}
+  refresh();
+});
+
+$("#designIn").addEventListener("change",async ev=>{
+  const f=ev.target.files[0];if(!f)return;
+  try{
+    design=await createImageBitmap(f);
+    $("#dImg").src=URL.createObjectURL(f);
+    $("#designInfo").innerHTML='<span class="ok">'+design.width+" × "+design.height+" px</span>";
+    place();
+  }catch(e){design=null;$("#designInfo").innerHTML='<span class="bad">Could not read that image.</span>'}
+  refresh();
+});
+
+/* ---------- preview, drag and resize ---------- */
+const stage=$("#stage"),box=$("#box"),qImg=$("#qImg");
+let qUrl="";
+async function showQr(){
+  if(!qrs.length)return;
+  URL.revokeObjectURL(qUrl);qUrl=URL.createObjectURL(qrs[cur].blob);qImg.src=qUrl;
+  $("#which").textContent=(cur+1)+" of "+qrs.length+" · "+qrs[cur].name;
+}
+function place(){
+  if(!design)return;
+  const ar=design.width/design.height;
+  pos.w=Math.min(pos.w,.9);pos.x=Math.max(0,Math.min(pos.x,1-pos.w));
+  pos.y=Math.max(0,Math.min(pos.y,1-pos.w*ar));
+  box.style.left=pos.x*100+"%";box.style.top=pos.y*100+"%";box.style.width=pos.w*100+"%";
+  box.style.aspectRatio="1";
+  const pd=Math.max(0,+$("#pad").value||0);
+  qImg.style.inset=pd+"%";qImg.style.width=qImg.style.height="auto";
+  qImg.style.cssText+=";left:"+pd+"%;top:"+pd+"%;right:"+pd+"%;bottom:"+pd+"%;width:"+(100-2*pd)+"%;height:"+(100-2*pd)+"%;transform:rotate("+$("#rot").value+"deg)";
+  box.style.background=$("#bg").checked?"#fff":"transparent";
+}
+let drag=null;
+function start(mode,e){e.preventDefault();e.stopPropagation();drag={mode,x:e.clientX,y:e.clientY,p:{...pos}};e.target.setPointerCapture(e.pointerId)}
+box.addEventListener("pointerdown",e=>{if(e.target===$("#hd"))return;start("move",e)});
+$("#hd").addEventListener("pointerdown",e=>start("size",e));
+addEventListener("pointermove",e=>{
+  if(!drag)return;const r=stage.getBoundingClientRect(),dx=(e.clientX-drag.x)/r.width,dy=(e.clientY-drag.y)/r.height;
+  if(drag.mode==="move"){pos.x=drag.p.x+dx;pos.y=drag.p.y+dy}
+  else pos.w=Math.max(.05,drag.p.w+dx);
+  place();
+});
+addEventListener("pointerup",()=>drag=null);
+["pad","bg","rot"].forEach(i=>$("#"+i).addEventListener("input",place));
+$("#prev").onclick=()=>{cur=(cur-1+qrs.length)%qrs.length;showQr()};
+$("#next").onclick=()=>{cur=(cur+1)%qrs.length;showQr()};
+function refresh(){
+  const ok=qrs.length&&design;
+  $("#empty").hidden=!!ok;stage.hidden=!ok;
+  $("#goZip").disabled=$("#goPdf").disabled=!(active().length&&design);
+  $("#prev").disabled=$("#next").disabled=qrs.length<2;
+  if(ok)place();
+}
+
+/* ---------- rendering ---------- */
+const cv=document.createElement("canvas"),ctx=cv.getContext("2d");
+async function render(q,type){
+  if(cv.width!==design.width||cv.height!==design.height){cv.width=design.width;cv.height=design.height}
+  ctx.clearRect(0,0,cv.width,cv.height);
+  if(type==="image/jpeg"){ctx.fillStyle="#fff";ctx.fillRect(0,0,cv.width,cv.height)}   /* PDF: transparent areas become white */
+  ctx.drawImage(design,0,0);
+  const bw=pos.w*design.width,x=pos.x*design.width,y=pos.y*design.height,pd=bw*Math.max(0,+$("#pad").value||0)/100;
+  if($("#bg").checked){ctx.fillStyle="#fff";ctx.fillRect(x,y,bw,bw)}
+  const bmp=await createImageBitmap(q.blob);
+  ctx.imageSmoothingEnabled=false;   /* keeps QR edges sharp for print */
+  const s=bw-2*pd;ctx.save();ctx.translate(x+bw/2,y+bw/2);ctx.rotate(+$("#rot").value*Math.PI/180);ctx.drawImage(bmp,-s/2,-s/2,s,s);ctx.restore();bmp.close();
+  const blob=await new Promise(r=>cv.toBlob(r,type,.95));
+  return new Uint8Array(await blob.arrayBuffer());
+}
+
+/* ---------- zip writer (store, no compression) ---------- */
+const CRC=(()=>{const t=new Uint32Array(256);for(let n=0;n<256;n++){let c=n;for(let k=0;k<8;k++)c=c&1?0xEDB88320^(c>>>1):c>>>1;t[n]=c}return t})();
+const crc=d=>{let c=~0;for(let i=0;i<d.length;i++)c=CRC[(c^d[i])&255]^(c>>>8);return~c>>>0};
+function makeZip(files){
+  const enc=new TextEncoder(),parts=[],cen=[];let off=0;
+  for(const f of files){
+    const nm=enc.encode(f.name),c=crc(f.data),h=new DataView(new ArrayBuffer(30));
+    h.setUint32(0,0x04034b50,true);h.setUint16(4,20,true);h.setUint16(6,0x800,true);h.setUint32(14,c,true);h.setUint32(18,f.data.length,true);h.setUint32(22,f.data.length,true);h.setUint16(26,nm.length,true);
+    parts.push(h,nm,f.data);
+    const k=new DataView(new ArrayBuffer(46));
+    k.setUint32(0,0x02014b50,true);k.setUint16(4,20,true);k.setUint16(6,20,true);k.setUint16(8,0x800,true);k.setUint32(16,c,true);k.setUint32(20,f.data.length,true);k.setUint32(24,f.data.length,true);k.setUint16(28,nm.length,true);k.setUint32(42,off,true);
+    cen.push(k,nm);off+=30+nm.length+f.data.length;
+  }
+  let cl=0;cen.forEach(x=>cl+=x.byteLength);
+  const e=new DataView(new ArrayBuffer(22));
+  e.setUint32(0,0x06054b50,true);e.setUint16(8,files.length,true);e.setUint16(10,files.length,true);e.setUint32(12,cl,true);e.setUint32(16,off,true);
+  return new Blob([...parts,...cen,e],{type:"application/zip"});
+}
+
+/* ---------- PDF writer (one JPEG per page) ---------- */
+function makePdf(pages,wPt,hPt){
+  const enc=new TextEncoder(),out=[],offs=[];let len=0;
+  const add=x=>{const b=typeof x==="string"?enc.encode(x):x;out.push(b);len+=b.length};
+  const N=3*pages.length+2;
+  add("%PDF-1.4\n");
+  offs[1]=len;add("1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n");
+  offs[2]=len;add("2 0 obj\n<< /Type /Pages /Count "+pages.length+" /Kids ["+pages.map((_,i)=>(3+3*i)+" 0 R").join(" ")+"] >>\nendobj\n");
+  pages.forEach((p,i)=>{
+    const a=3+3*i,c=a+1,im=a+2,cont="q "+wPt+" 0 0 "+hPt+" 0 0 cm /Im Do Q";
+    offs[a]=len;add(a+" 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 "+wPt+" "+hPt+"] /Resources << /XObject << /Im "+im+" 0 R >> >> /Contents "+c+" 0 R >>\nendobj\n");
+    offs[c]=len;add(c+" 0 obj\n<< /Length "+cont.length+" >>\nstream\n"+cont+"\nendstream\nendobj\n");
+    offs[im]=len;add(im+" 0 obj\n<< /Type /XObject /Subtype /Image /Width "+design.width+" /Height "+design.height+" /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length "+p.length+" >>\nstream\n");add(p);add("\nendstream\nendobj\n");
+  });
+  const xr=len;let t="xref\n0 "+(N+1)+"\n0000000000 65535 f \n";
+  for(let i=1;i<=N;i++)t+=String(offs[i]).padStart(10,"0")+" 00000 n \n";
+  add(t+"trailer\n<< /Size "+(N+1)+" /Root 1 0 R >>\nstartxref\n"+xr+"\n%%EOF");
+  return new Blob(out,{type:"application/pdf"});
+}
+
+function save(blob,name){const a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download=name;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(a.href),20000)}
+const tick=()=>new Promise(r=>setTimeout(r));
+let busy=false;
+function lock(v){busy=v;$("#goZip").disabled=$("#goPdf").disabled=v;$("#prog").hidden=!v}
+
+$("#goZip").onclick=async()=>{
+  if(busy)return;lock(true);
+  try{
+    const list=active(),per=Math.max(1,+$("#per").value||100),total=list.length,parts=Math.ceil(total/per);let made=0;
+    for(let p=0;p<parts;p++){
+      const files=[];
+      for(const q of list.slice(p*per,(p+1)*per)){
+        files.push({name:q.name+"-invitation.png",data:await render(q,"image/png")});made++;
+        $("#prog").value=made/total;$("#status").textContent="Creating "+made+" of "+total+"…";await tick();
+      }
+      save(makeZip(files),parts>1?"invitations-part-"+(p+1)+".zip":"invitations.zip");
+      await new Promise(r=>setTimeout(r,400));
+    }
+    $("#status").innerHTML='<span class="ok">Done: '+made+" of "+total+" invitations created"+(parts>1?" in "+parts+" zip files":"")+".</span>";
+  }catch(e){$("#status").innerHTML='<span class="bad">'+e.message+"</span>"}
+  lock(false);
+};
+$("#goPdf").onclick=async()=>{
+  if(busy)return;lock(true);
+  try{
+    const list=active(),dpi=Math.max(72,+$("#dpi").value||300),pages=[],total=list.length;
+    for(const q of list){
+      pages.push(await render(q,"image/jpeg"));
+      $("#prog").value=pages.length/total;$("#status").textContent="Creating page "+pages.length+" of "+total+"…";await tick();
+    }
+    save(makePdf(pages,+(design.width*72/dpi).toFixed(2),+(design.height*72/dpi).toFixed(2)),"invitations.pdf");
+    $("#status").innerHTML='<span class="ok">Done: PDF with '+pages.length+" of "+total+" pages.</span>";
+  }catch(e){$("#status").innerHTML='<span class="bad">'+e.message+"</span>"}
+  lock(false);
+};
+</script>
+</body>
+</html>

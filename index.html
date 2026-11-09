@@ -33,6 +33,7 @@ button:disabled{opacity:.45;cursor:not-allowed}
 .handle{position:absolute;right:-12px;bottom:-12px;width:24px;height:24px;background:var(--gold);border:2px solid #fff;border-radius:50%;cursor:nwse-resize;touch-action:none}
 .nav{display:flex;align-items:center;gap:10px;margin-bottom:10px}.nav button{width:auto;margin:0}
 .empty{padding:60px 20px;text-align:center;color:#6b756f;border:2px dashed var(--line);background:#fff}
+/*FL*/.fl{max-height:180px;overflow:auto;border:1px solid var(--line);margin-top:8px;font-size:.8rem}.fl label{display:flex;gap:8px;align-items:center;margin:0;padding:6px 8px;border-bottom:1px solid #eee}.fl label.off{color:#a3261f}
 progress{width:100%;height:14px;margin-top:8px}
 </style>
 </head>
@@ -42,14 +43,15 @@ progress{width:100%;height:14px;margin-top:8px}
 <div>
   <div class="step"><h2><span>1</span>QR codes (.zip)</h2>
     <input type="file" id="zipIn" accept=".zip,application/zip">
-    <div class="small" id="zipInfo">Choose the zip with one QR image per guest.</div><div id="log"></div></div>
+    <div class="small" id="zipInfo">Choose the zip with one QR image per guest.</div><div id="log"></div><div id="files"></div></div>
   <div class="step"><h2><span>2</span>Invitation design</h2>
     <input type="file" id="designIn" accept="image/png,image/jpeg,image/webp">
     <div class="small" id="designInfo">PNG or JPG, ideally 300 DPI.</div></div>
   <div class="step"><h2><span>3</span>Position the QR</h2>
     <div class="small">Drag the dashed box on the preview. Drag the gold dot to resize.</div>
     <label for="pad">White border around QR (% of its size)</label><input type="number" id="pad" value="6" min="0" max="20">
-    <label><input type="checkbox" id="bg" checked> White background behind QR (recommended for scanning)</label></div>
+    <label><input type="checkbox" id="bg" checked> White background behind QR (recommended for scanning)</label>
+    <label for="rot">Rotate QR</label><select id="rot" style="width:100%;min-height:44px;font:inherit"><option value="0">0° (upright)</option><option value="90">90°</option><option value="180">180°</option><option value="270">270°</option></select></div>
   <div class="step"><h2><span>4</span>Create files</h2>
     <label for="per">PNG zip: files per zip part</label><input type="number" id="per" value="100" min="1">
     <label for="dpi">Design DPI (sets PDF page size)</label><input type="number" id="dpi" value="300" min="72">
@@ -90,6 +92,31 @@ async function readZip(buf){
   };
   return{files:out,get};
 }
+/* a QR with no dark pixels (or one that cannot be decoded) is treated as blank */
+async function isBlank(blob){
+  try{const b=await createImageBitmap(blob),c=document.createElement("canvas");c.width=c.height=48;const x=c.getContext("2d");
+    x.fillStyle="#fff";x.fillRect(0,0,48,48);x.drawImage(b,0,0,48,48);b.close();
+    const d=x.getImageData(0,0,48,48).data;let min=255;
+    for(let i=0;i<d.length;i+=4){const l=(d[i]+d[i+1]+d[i+2])/3;if(l<min)min=l}
+    return min>200;
+  }catch(e){return true}
+}
+const active=()=>qrs.filter(q=>q.on);
+function updateCount(){
+  const bl=qrs.filter(q=>q.blank).length;
+  $("#zipInfo").innerHTML='<span class="ok">Using '+active().length+" of "+qrs.length+" image"+(qrs.length===1?"":"s")+"</span>"+(bl?' <span class="warn">('+bl+" blank or unreadable, left out)</span>":"");
+  refresh();
+}
+function renderFiles(){
+  const f=$("#files");f.className="fl";f.textContent="";
+  qrs.forEach(q=>{
+    const l=document.createElement("label"),c=document.createElement("input");
+    c.type="checkbox";c.checked=q.on;l.className=q.on?"":"off";
+    c.onchange=()=>{q.on=c.checked;l.className=q.on?"":"off";updateCount()};
+    l.append(c,document.createTextNode(q.name+(q.blank?" (looks blank)":"")));f.appendChild(l);
+  });
+  updateCount();
+}
 const base=n=>n.split("/").pop().replace(/\.[^.]+$/,"");
 const mime=n=>/\.png$/i.test(n)?"image/png":/\.webp$/i.test(n)?"image/webp":"image/jpeg";
 
@@ -105,11 +132,14 @@ $("#zipIn").addEventListener("change",async ev=>{
       if(!EXT.test(x.name)){skipped.push(x.name);return false}return true;
     }).sort((a,b)=>a.name.localeCompare(b.name,undefined,{numeric:true}));
     for(const x of list){
-      const data=await z.get(x);let name=base(x.name);
+      const data=await z.get(x);
+      if(!data.length){skipped.push(x.name+" (empty file)");continue}
+      let name=base(x.name);
       used[name]=(used[name]||0)+1;if(used[name]>1)name+="-"+used[name];
-      qrs.push({name,blob:new Blob([data],{type:mime(x.name)})});
+      const blob=new Blob([data],{type:mime(x.name)}),blank=await isBlank(blob);
+      qrs.push({name,blob,blank,on:!blank});
     }
-    $("#zipInfo").innerHTML='<span class="ok">Found '+qrs.length+" QR image"+(qrs.length===1?"":"s")+"</span>";
+    renderFiles();
     $("#log").innerHTML=(skipped.length?'<span class="warn">Ignored '+skipped.length+" non-image file(s): "+skipped.slice(0,10).join(", ")+(skipped.length>10?"…":"")+"</span>\n":"")+
       (Object.values(used).some(v=>v>1)?'<span class="warn">Some file names repeat; they were renamed with -2, -3…</span>\n':"")+
       "First: "+qrs.slice(0,3).map(q=>q.name).join(", ")+(qrs.length>3?" … Last: "+qrs[qrs.length-1].name:"");
@@ -146,7 +176,7 @@ function place(){
   box.style.aspectRatio="1";
   const pd=Math.max(0,+$("#pad").value||0);
   qImg.style.inset=pd+"%";qImg.style.width=qImg.style.height="auto";
-  qImg.style.cssText+=";left:"+pd+"%;top:"+pd+"%;right:"+pd+"%;bottom:"+pd+"%;width:"+(100-2*pd)+"%;height:"+(100-2*pd)+"%";
+  qImg.style.cssText+=";left:"+pd+"%;top:"+pd+"%;right:"+pd+"%;bottom:"+pd+"%;width:"+(100-2*pd)+"%;height:"+(100-2*pd)+"%;transform:rotate("+$("#rot").value+"deg)";
   box.style.background=$("#bg").checked?"#fff":"transparent";
 }
 let drag=null;
@@ -160,13 +190,13 @@ addEventListener("pointermove",e=>{
   place();
 });
 addEventListener("pointerup",()=>drag=null);
-["pad","bg"].forEach(i=>$("#"+i).addEventListener("input",place));
+["pad","bg","rot"].forEach(i=>$("#"+i).addEventListener("input",place));
 $("#prev").onclick=()=>{cur=(cur-1+qrs.length)%qrs.length;showQr()};
 $("#next").onclick=()=>{cur=(cur+1)%qrs.length;showQr()};
 function refresh(){
   const ok=qrs.length&&design;
   $("#empty").hidden=!!ok;stage.hidden=!ok;
-  $("#goZip").disabled=$("#goPdf").disabled=!ok;
+  $("#goZip").disabled=$("#goPdf").disabled=!(active().length&&design);
   $("#prev").disabled=$("#next").disabled=qrs.length<2;
   if(ok)place();
 }
@@ -175,12 +205,14 @@ function refresh(){
 const cv=document.createElement("canvas"),ctx=cv.getContext("2d");
 async function render(q,type){
   if(cv.width!==design.width||cv.height!==design.height){cv.width=design.width;cv.height=design.height}
+  ctx.clearRect(0,0,cv.width,cv.height);
+  if(type==="image/jpeg"){ctx.fillStyle="#fff";ctx.fillRect(0,0,cv.width,cv.height)}   /* PDF: transparent areas become white */
   ctx.drawImage(design,0,0);
   const bw=pos.w*design.width,x=pos.x*design.width,y=pos.y*design.height,pd=bw*Math.max(0,+$("#pad").value||0)/100;
   if($("#bg").checked){ctx.fillStyle="#fff";ctx.fillRect(x,y,bw,bw)}
   const bmp=await createImageBitmap(q.blob);
   ctx.imageSmoothingEnabled=false;   /* keeps QR edges sharp for print */
-  ctx.drawImage(bmp,x+pd,y+pd,bw-2*pd,bw-2*pd);bmp.close();
+  const s=bw-2*pd;ctx.save();ctx.translate(x+bw/2,y+bw/2);ctx.rotate(+$("#rot").value*Math.PI/180);ctx.drawImage(bmp,-s/2,-s/2,s,s);ctx.restore();bmp.close();
   const blob=await new Promise(r=>cv.toBlob(r,type,.95));
   return new Uint8Array(await blob.arrayBuffer());
 }
@@ -232,10 +264,10 @@ function lock(v){busy=v;$("#goZip").disabled=$("#goPdf").disabled=v;$("#prog").h
 $("#goZip").onclick=async()=>{
   if(busy)return;lock(true);
   try{
-    const per=Math.max(1,+$("#per").value||100),total=qrs.length,parts=Math.ceil(total/per);let made=0;
+    const list=active(),per=Math.max(1,+$("#per").value||100),total=list.length,parts=Math.ceil(total/per);let made=0;
     for(let p=0;p<parts;p++){
       const files=[];
-      for(const q of qrs.slice(p*per,(p+1)*per)){
+      for(const q of list.slice(p*per,(p+1)*per)){
         files.push({name:q.name+"-invitation.png",data:await render(q,"image/png")});made++;
         $("#prog").value=made/total;$("#status").textContent="Creating "+made+" of "+total+"…";await tick();
       }
@@ -249,8 +281,8 @@ $("#goZip").onclick=async()=>{
 $("#goPdf").onclick=async()=>{
   if(busy)return;lock(true);
   try{
-    const dpi=Math.max(72,+$("#dpi").value||300),pages=[],total=qrs.length;
-    for(const q of qrs){
+    const list=active(),dpi=Math.max(72,+$("#dpi").value||300),pages=[],total=list.length;
+    for(const q of list){
       pages.push(await render(q,"image/jpeg"));
       $("#prog").value=pages.length/total;$("#status").textContent="Creating page "+pages.length+" of "+total+"…";await tick();
     }
